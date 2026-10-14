@@ -21,10 +21,11 @@ Flags:
 
 | flag | default | meaning |
 | --- | --- | --- |
-| `-period` | `128` | audio block size in frames. 128 frames @48 kHz = 2.67 ms. Lower means tighter cue timing, higher is more resilient on a loaded machine. |
+| `-period` | last used, else `128` | output block size in frames. 128 frames @48 kHz = 2.67 ms. Lower means tighter cue timing, higher is more resilient on a loaded machine. Also settable from the toolbar. |
 | `-memory` | `2048` | megabytes of decoded audio kept for the projects in the set |
-| `-selftest <file>` | | play a file for a few seconds, measure decode, callback timing and cue latency, then exit |
-| `-window` | `3` | seconds of playback used by `-selftest` for the stability check |
+| `-selftest <file>` | | play an audio or `.cuedeck` file for a few seconds, measure decode, level, callback timing, clock and cue latency, then exit |
+| `-window` | `3` | seconds of playback used by `-selftest` to check the audio callback |
+| `-device` | system default | device for `-selftest`, matched against the device name (e.g. `-device Speakers`) |
 
 Requires Go 1.26+, a C toolchain (Fyne needs it for OpenGL), and macOS/Linux/Windows.
 
@@ -152,7 +153,45 @@ keystrokes to whatever holds focus. Pressing `enter` releases the field, and so 
 clicking anywhere else, so the transport gets its keys back either way; the status bar
 says so while the field is holding them.
 
-## Why triggers have no delay
+## If the sound breaks up
+
+Two different things can sound like "crackling", and the status bar tells them apart.
+
+**The material is too loud for the speakers.** The status bar shows the output level
+(`out -0.8 dBFS`) and the master gain (`master -6.0 dB`). If the level sits near 0 dBFS and
+you are on laptop speakers, the speakers' own protection processing is distorting the
+signal — not the player. Headphones have no such stage, which is why the same file sounds
+clean there. Pull the Master fader down a few dB (the readout tells you how far) or lower
+the system volume, and it clears up. `-selftest` reports the level of a file before you ever
+press play:
+
+```
+file level      : peak 0.9885 (-0.10 dBFS), rms 0.0736 (-22.66 dBFS)
+output peak     : 0.9165 (-0.76 dBFS), samples at full scale 0
+```
+
+**The audio callback is falling behind.** That is a real dropout, and it happens when the
+machine is busy or the block size is too small for the device. The status bar says
+`LATE 3 blocks (worst 1.2 ms) — raise the block size`, and `Block` in the toolbar lets you
+raise it (64 / 128 / 256 / 512 / 1024 frames) without restarting: the song, its position and
+its cues stay put. Your choice is remembered for the next launch. `-selftest` measures the
+same thing:
+
+```
+callback rate   : 11250 callbacks in 30.001s (expected 11250)
+callback spread : min 2.573ms / max 2.746ms across 11250 blocks
+clock           : 30.000 s of audio advanced in 30.001 s of wall clock (-0.003% off real time)
+late blocks     : 0 (worst 0s behind schedule)
+```
+
+That run — laptop speakers, 128 frame blocks, a 24-bit 48 kHz WAV, 30 seconds — delivered
+every callback on time with no resampling and no samples at full scale, so a file like that
+is not what is breaking up.
+
+One legitimate click remains: firing a cue cuts the audio hard at that instant, and a hard
+cut in the middle of a waveform is a step, which is audible as a tick. That is the price of
+"no delay at all" on cue jumps; a 3 ms fade would remove it at no perceptible cost if you
+want it.
 
 The requirement is that firing a cue must not be late — a director cannot wait for a
 decoder. Four things make that work:

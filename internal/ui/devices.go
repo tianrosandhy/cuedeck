@@ -10,11 +10,20 @@ import (
 
 const (
 	devicePreference    = "output.device"
+	periodPreference    = "output.period"
 	defaultDeviceOption = "System default"
 )
 
 func RememberedDevice(fyneApp fyne.App) string {
 	return fyneApp.Preferences().String(devicePreference)
+}
+
+func RememberedBlock(fyneApp fyne.App, fallback int) int {
+	period := fyneApp.Preferences().Int(periodPreference)
+	if period <= 0 {
+		return fallback
+	}
+	return period
 }
 
 func deviceLabel(device audio.OutputDevice) string {
@@ -94,6 +103,7 @@ func (a *App) deviceIDFor(label string) string {
 type transportState struct {
 	live     bool
 	deviceID string
+	period   int
 	position float64
 	playing  bool
 	volume   float64
@@ -103,11 +113,12 @@ type transportState struct {
 
 func (a *App) captureTransport() transportState {
 	if a.engine == nil {
-		return transportState{}
+		return transportState{period: audio.DefaultPeriodFrames}
 	}
 	return transportState{
 		live:     true,
 		deviceID: a.engine.Device().ID,
+		period:   a.engine.ConfiguredPeriod(),
 		position: a.engine.Position(),
 		playing:  a.engine.IsPlaying(),
 		volume:   a.engine.Volume(),
@@ -120,20 +131,31 @@ func (a *App) switchDevice(id string) {
 	if a.engine.Device().ID == id {
 		return
 	}
-	previous := a.captureTransport()
-	period := a.engine.ConfiguredPeriod()
+	a.restartEngine(id, a.engine.ConfiguredPeriod())
+}
 
-	effective := id
-	replacement, err := audio.StartOn(id, period)
+func (a *App) setBlock(frames int) {
+	if frames <= 0 || a.engine.ConfiguredPeriod() == frames {
+		return
+	}
+	a.restartEngine(a.engine.Device().ID, frames)
+}
+
+func (a *App) restartEngine(deviceID string, period int) {
+	previous := a.captureTransport()
+
+	effective, effectivePeriod := deviceID, period
+	replacement, err := audio.StartOn(effective, effectivePeriod)
 	if err != nil {
-		a.fail("Cannot use that output device", err)
-		effective = previous.deviceID
-		replacement, err = audio.StartOn(effective, period)
+		a.fail("Cannot open that output device", err)
+		effective, effectivePeriod = previous.deviceID, previous.period
+		replacement, err = audio.StartOn(effective, effectivePeriod)
 		if err != nil {
 			a.engine.Close()
 			a.engine = nil
 			a.fail("Cannot open any output device", err)
 			a.refreshDevices()
+			a.syncBlockSelect()
 			return
 		}
 	}
@@ -147,6 +169,7 @@ func (a *App) switchDevice(id string) {
 		replacement.SetVolume(previous.volume)
 	}
 	a.fyneApp.Preferences().SetString(devicePreference, effective)
+	a.fyneApp.Preferences().SetInt(periodPreference, effectivePeriod)
 
 	if previous.clip != nil && previous.rate == replacement.Rate() {
 		replacement.Load(previous.clip)
@@ -166,5 +189,6 @@ func (a *App) switchDevice(id string) {
 	}
 
 	a.refreshDevices()
+	a.syncBlockSelect()
 	a.updateProjectRows()
 }

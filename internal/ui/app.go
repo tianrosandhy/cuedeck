@@ -82,6 +82,8 @@ type App struct {
 	deviceLabels []string
 	deviceIDs    []string
 
+	blockSelect *widget.Select
+
 	fileLabel   *widget.Label
 	titleLabel  *widget.Label
 	clock       *valueText
@@ -198,8 +200,40 @@ func (a *App) buildToolbar() fyne.CanvasObject {
 		refreshBtn,
 	)
 
-	a.toolbarBox = container.NewBorder(nil, nil, nil, container.NewHBox(output, widget.NewSeparator(), helpBtn), left)
+	a.blockSelect = widget.NewSelect(blockOptions(), nil)
+	a.blockSelect.OnChanged = func(label string) {
+		a.setBlock(blockFrames(label))
+	}
+	a.syncBlockSelect()
+	block := container.NewHBox(
+		widget.NewLabelWithStyle("Block", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewGridWrap(fyne.NewSize(120, a.blockSelect.MinSize().Height+6), a.blockSelect),
+	)
+
+	a.toolbarBox = container.NewBorder(nil, nil, nil, container.NewHBox(output, block, widget.NewSeparator(), helpBtn), left)
 	return a.toolbarBox
+}
+
+func blockOptions() []string {
+	return []string{"64", "128", "256", "512", "1024"}
+}
+
+func blockFrames(label string) int {
+	return int(parseFloat(label, 0))
+}
+
+func (a *App) syncBlockSelect() {
+	if a.blockSelect == nil {
+		return
+	}
+	period := audio.DefaultPeriodFrames
+	if a.engine != nil {
+		period = a.engine.ConfiguredPeriod()
+	}
+	label := fmt.Sprintf("%d", period)
+	if a.blockSelect.Selected != label {
+		a.blockSelect.SetSelected(label)
+	}
 }
 
 func (a *App) buildReadout() fyne.CanvasObject {
@@ -418,6 +452,16 @@ func (a *App) statusText() string {
 		if cue := a.engine.CueLatency(); cue > 0 {
 			parts = append(parts, fmt.Sprintf("last cue applied %.2f ms after trigger", float64(cue.Microseconds())/1000))
 		}
+		if peak := a.engine.TakePeak(); peak > 0 {
+			parts = append(parts, "out "+dbText(peak))
+		}
+		if volume := a.engine.Volume(); volume > 0 && volume < 1 {
+			parts = append(parts, "master "+dbText(float32(volume)))
+		}
+		if late := a.engine.LateBlocks(); late > 0 {
+			parts = append(parts, fmt.Sprintf("LATE %d blocks (worst %s) — raise the block size",
+				late, a.engine.WorstLateBlock().Round(10*time.Microsecond)))
+		}
 	}
 	if len(a.projects) > 0 {
 		parts = append(parts, fmt.Sprintf("set %d/%d songs", a.active+1, len(a.projects)))
@@ -436,6 +480,13 @@ func memoryText(used, budget int64) string {
 		text += fmt.Sprintf(" of %d MB", budget>>20)
 	}
 	return text
+}
+
+func dbText(linear float32) string {
+	if linear <= 0 {
+		return "-inf dB"
+	}
+	return fmt.Sprintf("%.1f dB", 20*math.Log10(float64(linear)))
 }
 
 func (a *App) syncTimeline() {

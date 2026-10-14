@@ -78,6 +78,10 @@ type Engine struct {
 	blockMin atomic.Int64
 	blockMax atomic.Int64
 	blocks   atomic.Int64
+	late     atomic.Int64
+	lateNs   atomic.Int64
+	peak     atomic.Uint32
+	full     atomic.Int64
 	lastCb   atomic.Int64
 
 	gain float32
@@ -175,6 +179,12 @@ func (e *Engine) onData(output, _ []byte, frames uint32) {
 			if previous := e.blockMax.Load(); delta > previous {
 				e.blockMax.Store(delta)
 			}
+			if delta > prev+prev/2 {
+				e.late.Add(1)
+				if late := delta - prev; late > e.lateNs.Load() {
+					e.lateNs.Store(late)
+				}
+			}
 		}
 	}
 	e.blocks.Add(1)
@@ -222,20 +232,37 @@ func (e *Engine) onData(output, _ []byte, frames uint32) {
 
 	previous := e.gain
 	data := clip.Data
+	var peak float32
+	var full int64
 	for i := int64(0); i < count; i++ {
 		current := gain
 		if previous != gain {
 			current = previous + (gain-previous)*float32(i)/float32(count)
 		}
 		source := (pos + i) * 2
-		samples[2*i] = data[source] * current
-		samples[2*i+1] = data[source+1] * current
+		left := data[source] * current
+		right := data[source+1] * current
+		samples[2*i] = left
+		samples[2*i+1] = right
+		if magnitude := magnitude32(left); magnitude > peak {
+			peak = magnitude
+		}
+		if magnitude := magnitude32(right); magnitude > peak {
+			peak = magnitude
+		}
+		if magnitude32(left) >= 1 {
+			full++
+		}
+		if magnitude32(right) >= 1 {
+			full++
+		}
 	}
 	if tail := int(count) * 2; tail < len(samples) {
 		clear(samples[tail:])
 	}
 	e.gain = gain
 	e.pos.Store(pos + count)
+	e.recordLevel(peak, full)
 
 	if count < int64(frames) {
 		e.playing.Store(false)
@@ -245,6 +272,59 @@ func (e *Engine) onData(output, _ []byte, frames uint32) {
 
 func (e *Engine) gainTarget() float32 {
 	return math.Float32frombits(e.volume.Load())
+}
+
+func magnitude32(value float32) float32 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func (e *Engine) recordLevel(peak float32, full int64) {
+	if full > 0 {
+		e.full.Add(full)
+	}
+	if peak <= 0 {
+		return
+	}
+	for {
+		current := e.peak.Load()
+		if peak <= math.Float32frombits(current) {
+			return
+		}
+		if e.peak.CompareAndSwap(current, math.Float32bits(peak)) {
+			return
+		}
+	}
+}
+
+func (e *Engine) TakePeak() float32 {
+	if e == nil {
+		return 0
+	}
+	return math.Float32frombits(e.peak.Swap(0))
+}
+
+func (e *Engine) FullScaleSamples() int64 {
+	if e == nil {
+		return 0
+	}
+	return e.full.Load()
+}
+
+func (e *Engine) LateBlocks() int64 {
+	if e == nil {
+		return 0
+	}
+	return e.late.Load()
+}
+
+func (e *Engine) WorstLateBlock() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return time.Duration(e.lateNs.Load())
 }
 
 func (e *Engine) Device() OutputDevice {
@@ -347,6 +427,10 @@ func (e *Engine) ResetStats() {
 	e.blocks.Store(0)
 	e.blockMin.Store(0)
 	e.blockMax.Store(0)
+	e.late.Store(0)
+	e.lateNs.Store(0)
+	e.peak.Store(0)
+	e.full.Store(0)
 }
 
 func (e *Engine) CueLatency() time.Duration {
