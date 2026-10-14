@@ -16,6 +16,7 @@ import (
 
 func main() {
 	period := flag.Int("period", audio.DefaultPeriodFrames, "output block size in frames, lower means tighter cue timing")
+	memory := flag.Int("memory", 2048, "megabytes of decoded audio to keep for the loaded projects")
 	selftest := flag.String("selftest", "", "measure decode, playback and cue latency for an audio file, then exit")
 	window := flag.Int("window", 3, "seconds of playback used by -selftest to check the audio callback")
 	flag.Usage = usage
@@ -42,13 +43,16 @@ func main() {
 	}
 	defer engine.Close()
 
-	application := ui.New(fyneApp, engine, flag.Arg(0))
+	application := ui.New(fyneApp, engine, ui.Options{
+		Paths:        flag.Args(),
+		MemoryBudget: int64(*memory) << 20,
+	})
 	application.Run()
 }
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "CueDeck - cue player for music directors\n\n")
-	fmt.Fprintf(os.Stderr, "usage:\n  cuedeck [flags] [audio or .cuedeck file]\n\nflags:\n")
+	fmt.Fprintf(os.Stderr, "usage:\n  cuedeck [flags] [project or audio file ...]\n\nflags:\n")
 	flag.PrintDefaults()
 }
 

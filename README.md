@@ -22,10 +22,36 @@ Flags:
 | flag | default | meaning |
 | --- | --- | --- |
 | `-period` | `128` | audio block size in frames. 128 frames @48 kHz = 2.67 ms. Lower means tighter cue timing, higher is more resilient on a loaded machine. |
+| `-memory` | `2048` | megabytes of decoded audio kept for the projects in the set |
 | `-selftest <file>` | | play a file for a few seconds, measure decode, callback timing and cue latency, then exit |
 | `-window` | `3` | seconds of playback used by `-selftest` for the stability check |
 
 Requires Go 1.26+, a C toolchain (Fyne needs it for OpenGL), and macOS/Linux/Windows.
+
+## The set: several projects at once
+
+Open as many projects as you like and they stack up in the **Set** panel on the left. You can
+add them with `Open` (each file you pick joins the set), by dragging files onto the window,
+or by naming them on the command line:
+
+```sh
+./cuedeck set1.cuedeck set2.cuedeck encore.mp3
+```
+
+Clicking a song in the set **loads it, paused, at the beginning** — the transport only starts
+when you press play, so you can line up the next song while the applause runs. When a song
+reaches its end it stops there: nothing loads or starts by itself. `page up` / `page down`
+load the previous / next song in the set, and the ✕ on a row removes it.
+
+Songs are decoded in the background as they are added, so switching between them is instant:
+choosing one hands the already-decoded audio to the engine rather than decoding on the night.
+Decoded audio is held up to a budget (`-memory`, 2048 MB by default — about 90 minutes of
+stereo at 48 kHz); past that the least recently used song drops its audio and is decoded
+again the next time you pick it, a few seconds behind a progress dialog. The status bar shows
+where you are: `set 2/5 songs · 4 decoded · PCM 1210 MB of 2048 MB`.
+
+`Save` and `Save As…` write the song you are on. Each project keeps its own cues, tempo,
+beat-1 offset and audio.
 
 ## The app icon on macOS
 
@@ -115,6 +141,7 @@ Click or drag anywhere on it to scrub, scroll over it to nudge by half a beat.
 | `,` / `.` | nudge ¼ beat |
 | `[` / `]` | nudge one bar |
 | `m` | add a cue at the playhead |
+| `page up` / `page down` | load the previous / next song in the set |
 | `s` | stop |
 
 Clicking a cue row picks it, and hovering a row lightens it, so the list also works with
@@ -201,6 +228,7 @@ internal/audio/engine.go   miniaudio device, render callback, instant jumps, met
 internal/model/project.go  tempo and beat maths, cue list
 internal/project/file.go   .cuedeck reader/writer
 internal/ui/app.go         window, transport, tempo bar, keyboard, file handling
+internal/ui/projects.go    the set: loading, background decoding, memory budget
 internal/ui/devices.go     output device list, switching, remembering the choice
 internal/ui/playhead.go    the cue map strip widget
 internal/ui/markers.go     cue rows and cue dialogs
@@ -216,10 +244,11 @@ go test ./...
 
 Cue maths, the project file round trip, decoding of `mp3example.mp3`, stereo channel
 separation, the render callback (jump latency, seek clamping, end of track, callback
-stability), output device listing and switching, canvas gestures, cue hotkeys, arrow
-picking, hover and click states, focus handling and pixel checks on the cue map and on the
-row highlights. The device-dependent audio tests skip themselves when no output device is
-available.
+stability), the set (opening several projects, choosing, closing, the memory budget and
+that a finished song never advances the set by itself), output device listing and switching,
+canvas gestures, cue hotkeys, arrow picking, hover and click states, focus handling and
+pixel checks on the cue map and on the row highlights. The device-dependent audio tests skip
+themselves when no output device is available.
 
 ## Known limits
 
@@ -228,6 +257,8 @@ available.
   the device rate skips the resample. Switching to an output device that runs at a different
   rate pays that cost again.
 - Cues jump immediately; there is no quantise-to-the-next-beat option.
+- Nothing plays automatically when a song ends: the transport stops at the end of the track
+  and the set stays where it is, ready for you to choose the next song.
 - Cue files always embed the audio, so a `.cuedeck` for a long WAV is large — that is the
   price of one self-contained file.
 - If an output device disappears mid-show the engine keeps running against it (and the

@@ -56,7 +56,7 @@ func TestTheWindowGetsTheEmbeddedIcon(t *testing.T) {
 	recorder := &iconRecorder{App: test.NewApp()}
 	t.Cleanup(recorder.App.Quit)
 
-	New(recorder, nil, "")
+	New(recorder, nil, testOptions())
 
 	icon := recorder.Icon()
 	if icon == nil {

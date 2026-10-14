@@ -28,9 +28,9 @@ type cueRow struct {
 
 	onSelect func()
 
-	playing  bool
-	selected bool
-	hovered  bool
+	live    bool
+	picked  bool
+	hovered bool
 }
 
 func newCueRow(content fyne.CanvasObject, timing *widget.Label, onSelect func()) *cueRow {
@@ -58,19 +58,19 @@ func (r *cueRow) MouseMoved(*desktop.MouseEvent) {}
 
 func (r *cueRow) MouseOut() { r.setHovered(false) }
 
-func (r *cueRow) setPlaying(on bool) {
-	if r.playing == on {
+func (r *cueRow) setLive(on bool) {
+	if r.live == on {
 		return
 	}
-	r.playing = on
+	r.live = on
 	r.paint()
 }
 
-func (r *cueRow) setSelected(on bool) {
-	if r.selected == on {
+func (r *cueRow) setPicked(on bool) {
+	if r.picked == on {
 		return
 	}
-	r.selected = on
+	r.picked = on
 	r.paint()
 }
 
@@ -84,16 +84,16 @@ func (r *cueRow) setHovered(on bool) {
 
 func (r *cueRow) paint() {
 	switch {
-	case r.selected:
+	case r.picked:
 		r.bg.FillColor = colorRowPicked
-	case r.playing:
+	case r.live:
 		r.bg.FillColor = colorRowPlaying
 	case r.hovered:
 		r.bg.FillColor = colorRowHover
 	default:
 		r.bg.FillColor = colorRowIdle
 	}
-	if r.playing {
+	if r.live {
 		r.bar.FillColor = colorBarPlaying
 	} else {
 		r.bar.FillColor = colorBarIdle
@@ -193,8 +193,8 @@ func (a *App) newCueRow(index int, marker model.Marker) *cueRow {
 
 func (a *App) highlightRows() {
 	for i, row := range a.rows {
-		row.setPlaying(i == a.section)
-		row.setSelected(i == a.selected)
+		row.setLive(i == a.section)
+		row.setPicked(i == a.selected)
 	}
 }
 

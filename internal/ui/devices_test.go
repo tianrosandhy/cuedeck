@@ -113,7 +113,7 @@ func TestThePickerIsPopulatedFromTheMachine(t *testing.T) {
 		t.Skipf("no output devices available: %v", err)
 	}
 
-	a := New(fyneApp, nil, "")
+	a := New(fyneApp, nil, testOptions())
 	if len(a.deviceSelect.Options) != len(devices)+1 {
 		t.Fatalf("the picker offers %v for %d devices", a.deviceSelect.Options, len(devices))
 	}
@@ -131,7 +131,7 @@ func TestSwitchingToARealDeviceMovesTheEngineAndRemembersIt(t *testing.T) {
 		t.Skipf("no output devices available: %v", err)
 	}
 
-	a := New(fyneApp, nil, "")
+	a := New(fyneApp, nil, testOptions())
 	target := devices[0]
 	a.switchDevice(target.ID)
 	t.Cleanup(func() {

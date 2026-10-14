@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 
 	"fyne.io/fyne/v2"
@@ -149,42 +148,23 @@ func (a *App) switchDevice(id string) {
 	}
 	a.fyneApp.Preferences().SetString(devicePreference, effective)
 
-	switch {
-	case previous.clip != nil && previous.rate == replacement.Rate():
+	if previous.clip != nil && previous.rate == replacement.Rate() {
 		replacement.Load(previous.clip)
 		replacement.SeekSeconds(previous.position)
 		if previous.playing {
 			replacement.Play()
 		}
-	case len(a.raw) > 0:
-		a.redecode(previous.position, previous.playing)
+	} else {
+		a.resume = resumeState{
+			armed:    true,
+			position: previous.position,
+			playing:  previous.playing,
+		}
+		a.invalidateClips()
+		a.loadActiveClip()
+		a.scheduleDecode()
 	}
 
 	a.refreshDevices()
-}
-
-func (a *App) redecode(position float64, playing bool) {
-	if a.engine == nil || len(a.raw) == 0 {
-		return
-	}
-	name := a.proj.Audio.OriginalName
-	rate := a.engine.Rate()
-	raw := a.raw
-	a.showBusy("Re-decoding the audio for the new output rate…")
-	go func() {
-		clip, err := audio.Decode(name, bytes.NewReader(raw), rate)
-		fyne.Do(func() {
-			a.hideBusy()
-			if err != nil {
-				a.fail("Cannot re-decode the audio", err)
-				return
-			}
-			a.engine.Load(clip)
-			a.engine.SeekSeconds(position)
-			if playing {
-				a.engine.Play()
-			}
-			a.syncTimeline()
-		})
-	}()
+	a.updateProjectRows()
 }

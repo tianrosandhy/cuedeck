@@ -1,10 +1,8 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -53,6 +51,11 @@ func (t *tapTracker) Tap() (float64, bool) {
 
 func (t *tapTracker) Reset() { t.taps = nil }
 
+type Options struct {
+	Paths        []string
+	MemoryBudget int64
+}
+
 type App struct {
 	fyneApp fyne.App
 	win     fyne.Window
@@ -62,6 +65,18 @@ type App struct {
 	raw     []byte
 	tap     *tapTracker
 	busy    dialog.Dialog
+
+	projects     []*loadedProject
+	active       int
+	uses         int
+	memoryBudget int64
+	decoding     bool
+	resume       resumeState
+
+	setList     *fyne.Container
+	setScroll   *container.Scroll
+	setTitle    *widget.Label
+	projectRows []*cueRow
 
 	deviceSelect *widget.Select
 	deviceLabels []string
@@ -91,30 +106,35 @@ type App struct {
 	dirty    bool
 	playing  bool
 	editing  bool
+	syncing  bool
 }
 
-func New(fyneApp fyne.App, engine *audio.Engine, initial string) *App {
+func New(fyneApp fyne.App, engine *audio.Engine, options Options) *App {
 	a := &App{
-		fyneApp:  fyneApp,
-		engine:   engine,
-		proj:     model.NewProject(),
-		tap:      &tapTracker{},
-		section:  -2,
-		selected: -1,
+		fyneApp:      fyneApp,
+		engine:       engine,
+		proj:         model.NewProject(),
+		tap:          &tapTracker{},
+		section:      -2,
+		selected:     -1,
+		active:       -1,
+		memoryBudget: options.MemoryBudget,
 	}
 	a.win = fyneApp.NewWindow("CueDeck")
 	fyneApp.SetIcon(appIcon())
 	a.win.SetContent(a.buildUI())
 	a.win.Resize(fyne.NewSize(1200, 800))
 	a.attachKeys()
+	a.win.SetOnDropped(a.openDropped)
 	a.buildRows()
 	a.syncTempoControls()
 	a.syncTimeline()
 	a.updateTitle()
+	a.buildProjectRows()
 	a.refreshDevices()
 
-	if initial != "" {
-		a.loadPath(initial)
+	if len(options.Paths) > 0 {
+		a.openPaths(options.Paths)
 	}
 	return a
 }
@@ -130,6 +150,7 @@ func (a *App) Project() *model.Project { return a.proj }
 
 func (a *App) buildUI() fyne.CanvasObject {
 	cuePanel := a.buildCuePanel()
+	setPanel := a.buildSetPanel()
 	top := container.NewVBox(
 		a.buildToolbar(),
 		widget.NewSeparator(),
@@ -137,10 +158,11 @@ func (a *App) buildUI() fyne.CanvasObject {
 		a.buildReadout(),
 		a.buildPlayhead(),
 	)
+	left := container.NewBorder(nil, nil, a.buildTransport(), nil, setPanel)
 	return container.NewBorder(
 		top,
 		a.buildFooter(),
-		a.buildTransport(),
+		left,
 		nil,
 		cuePanel,
 	)
@@ -204,6 +226,9 @@ func (a *App) buildTempoBar() fyne.CanvasObject {
 		return nil
 	}
 	a.bpm.OnChanged = func(s string) {
+		if a.syncing {
+			return
+		}
 		v := parseFloat(s, 0)
 		if v <= 0 || v > 1000 {
 			return
@@ -217,6 +242,9 @@ func (a *App) buildTempoBar() fyne.CanvasObject {
 	a.sig = widget.NewSelect([]string{"4/4", "3/4", "2/4", "5/4", "6/8", "7/8", "12/8"}, nil)
 	a.sig.SetSelected("4/4")
 	a.sig.OnChanged = func(s string) {
+		if a.syncing {
+			return
+		}
 		num, den := parseSig(s)
 		a.proj.Tempo.SigNum = num
 		a.proj.Tempo.SigDen = den
@@ -291,6 +319,10 @@ func (a *App) attachKeys() {
 			a.moveSelection(1)
 		case fyne.KeyReturn, fyne.KeyEnter:
 			a.playSelection()
+		case fyne.KeyPageUp:
+			a.chooseProject(a.active - 1)
+		case fyne.KeyPageDown:
+			a.chooseProject(a.active + 1)
 		}
 	})
 }
@@ -387,10 +419,23 @@ func (a *App) statusText() string {
 			parts = append(parts, fmt.Sprintf("last cue applied %.2f ms after trigger", float64(cue.Microseconds())/1000))
 		}
 	}
+	if len(a.projects) > 0 {
+		parts = append(parts, fmt.Sprintf("set %d/%d songs", a.active+1, len(a.projects)))
+		parts = append(parts, fmt.Sprintf("%d decoded", a.decodedCount()))
+		parts = append(parts, fmt.Sprintf("PCM %s", memoryText(a.cachedBytes(), a.memoryBudget)))
+	}
 	if a.editing {
 		parts = append(parts, "typing the bpm — enter hands the keys back to the transport")
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+func memoryText(used, budget int64) string {
+	text := fmt.Sprintf("%d MB", used>>20)
+	if budget > 0 {
+		text += fmt.Sprintf(" of %d MB", budget>>20)
+	}
+	return text
 }
 
 func (a *App) syncTimeline() {
@@ -406,13 +451,8 @@ func (a *App) syncTimeline() {
 }
 
 func (a *App) syncTempoControls() {
-	if a.bpm.Text == "" {
-		a.bpm.SetText(formatBeat(a.proj.Tempo.BPM))
-	}
-	label := fmt.Sprintf("%d/%d", a.proj.Tempo.SigNum, a.proj.Tempo.SigDen)
-	if a.sig.Selected != label {
-		a.sig.SetSelected(label)
-	}
+	a.bpm.SetText(formatBeat(a.proj.Tempo.BPM))
+	a.sig.SetSelected(fmt.Sprintf("%d/%d", a.proj.Tempo.SigNum, a.proj.Tempo.SigDen))
 }
 
 func (a *App) onTempoChanged() {
@@ -431,17 +471,24 @@ func (a *App) updateTitle() {
 	if a.dirty {
 		mark = " •"
 	}
-	a.win.SetTitle(fmt.Sprintf("CueDeck — %s%s", a.proj.Name, mark))
+	title := a.proj.Name
+	position := ""
+	if a.active < 0 {
+		title = "no project loaded"
+	} else if len(a.projects) > 1 {
+		position = fmt.Sprintf(" (%d/%d)", a.active+1, len(a.projects))
+	}
+	a.win.SetTitle(fmt.Sprintf("CueDeck — %s%s%s", title, position, mark))
 
-	title := a.proj.Name + mark
+	shown := title + position + mark
 	name := "unsaved"
 	if a.path != "" {
 		name = filepath.Base(a.path)
 	}
 	file := fmt.Sprintf("  (%s)", name)
-	relayout := needsRelayout(a.titleLabel.Text, title) || needsRelayout(a.fileLabel.Text, file)
-	if a.titleLabel.Text != title {
-		a.titleLabel.SetText(title)
+	relayout := needsRelayout(a.titleLabel.Text, shown) || needsRelayout(a.fileLabel.Text, file)
+	if a.titleLabel.Text != shown {
+		a.titleLabel.SetText(shown)
 	}
 	if a.fileLabel.Text != file {
 		a.fileLabel.SetText(file)
@@ -530,87 +577,34 @@ func (a *App) openFile() {
 		}
 		path := reader.URI().Path()
 		reader.Close()
-		a.loadPath(path)
+		a.openPaths([]string{path})
 	}, a.win)
 	d.SetFilter(storage.NewExtensionFileFilter(append([]string{project.Ext}, audio.SupportedExtensions()...)))
+	d.SetTitleText("Open a project or an audio file (adds to the set)")
 	d.Resize(fyne.NewSize(940, 640))
 	d.Show()
 }
 
-func (a *App) loadPath(path string) {
-	if project.IsProjectFile(path) {
-		a.loadProject(path)
-		return
+func (a *App) openDropped(_ fyne.Position, uris []fyne.URI) {
+	paths := make([]string, 0, len(uris))
+	for _, uri := range uris {
+		if uri == nil {
+			continue
+		}
+		if path := uri.Path(); path != "" {
+			paths = append(paths, path)
+		}
 	}
-	a.loadAudio(path)
-}
-
-func (a *App) loadAudio(path string) {
-	a.showBusy("Decoding " + filepath.Base(path) + "…")
-	go func() {
-		raw, err := os.ReadFile(path)
-		var clip *audio.Clip
-		if err == nil {
-			clip, err = audio.Decode(filepath.Base(path), bytes.NewReader(raw), a.engine.Rate())
-		}
-		fyne.Do(func() {
-			a.hideBusy()
-			if err != nil {
-				a.fail("Cannot load audio", err)
-				return
-			}
-			p := model.NewProject()
-			p.Name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-			p.Audio = model.AudioInfo{
-				OriginalName: filepath.Base(path),
-				Format:       clip.Kind,
-				SourceRate:   clip.SourceRate,
-				Bytes:        int64(len(raw)),
-			}
-			a.proj = p
-			a.path = ""
-			a.raw = raw
-			a.engine.Load(clip)
-			a.adoptProject()
-		})
-	}()
-}
-
-func (a *App) loadProject(path string) {
-	a.showBusy("Opening " + filepath.Base(path) + "…")
-	go func() {
-		p, raw, err := project.Load(path)
-		var clip *audio.Clip
-		if err == nil && len(raw) > 0 {
-			clip, err = audio.Decode(p.Audio.OriginalName, bytes.NewReader(raw), a.engine.Rate())
-		}
-		fyne.Do(func() {
-			a.hideBusy()
-			if err != nil {
-				a.fail("Cannot open project", err)
-				return
-			}
-			a.proj = p
-			a.raw = raw
-			a.path = path
-			a.engine.Load(clip)
-			a.adoptProject()
-		})
-	}()
-}
-
-func (a *App) adoptProject() {
-	a.dirty = false
-	a.tap.Reset()
-	a.selected = -1
-	a.bpm.SetText(formatBeat(a.proj.Tempo.BPM))
-	a.sig.SetSelected(fmt.Sprintf("%d/%d", a.proj.Tempo.SigNum, a.proj.Tempo.SigDen))
-	a.buildRows()
-	a.syncTimeline()
-	a.updateTitle()
+	if len(paths) > 0 {
+		a.openPaths(paths)
+	}
 }
 
 func (a *App) save(forceDialog bool) {
+	if a.activeEntry() == nil {
+		a.fail("Nothing to save", fmt.Errorf("open a project first"))
+		return
+	}
 	if a.path == "" || forceDialog {
 		d := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
 			if err != nil {
@@ -642,6 +636,9 @@ func (a *App) writeProject(path string) {
 		return
 	}
 	a.path = path
+	if entry := a.activeEntry(); entry != nil {
+		entry.path = path
+	}
 	a.dirty = false
 	a.updateTitle()
 }
@@ -680,6 +677,7 @@ func (a *App) showHelp() {
 		", / .        nudge 1/4 beat",
 		"[ / ]        nudge one bar",
 		"m            drop a cue at the playhead",
+		"page up/down load the previous / next song in the set",
 		"scroll       nudge the strip by 1/2 beat",
 		"click / drag the strip to scrub",
 		"",
@@ -687,10 +685,15 @@ func (a *App) showHelp() {
 		"strip; the part playing now has a blue edge.",
 		"Cues are stored as beat positions, so they stay",
 		"locked to the music if you change the BPM.",
+		"",
+		"The set on the left holds every project you have",
+		"opened. Clicking one loads it paused — press",
+		"space when you want it to start, and nothing",
+		"starts by itself when a song ends.",
 	}, "\n")
 	label := widget.NewLabelWithStyle(text, fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
 	d := dialog.NewCustom("Keys", "Close", container.NewPadded(label), a.win)
-	d.Resize(fyne.NewSize(460, 420))
+	d.Resize(fyne.NewSize(520, 560))
 	d.Show()
 }
 

@@ -21,22 +21,23 @@ func newTestApp(t *testing.T) *App {
 	t.Helper()
 	fyneApp := test.NewApp()
 	t.Cleanup(fyneApp.Quit)
-	return New(fyneApp, nil, "")
+	return New(fyneApp, nil, testOptions())
 }
 
 func TestWindowRendersWithCues(t *testing.T) {
 	a := newTestApp(t)
-	a.proj.Name = "soundcheck"
-	p := a.proj
-	p.Add("Intro", 0)
-	p.Add("Verse", 16)
-	p.Add("Chorus", 32)
-	p.Add("Bridge", 62.5)
-	for i := 0; i < 8; i++ {
-		p.Add(fmt.Sprintf("part %d", i+5), 80+float64(i)*16)
+	dir := t.TempDir()
+	beats := make([]float64, 0, 12)
+	for i := 0; i < 12; i++ {
+		beats = append(beats, float64(i)*16)
 	}
-	a.buildRows()
-	a.syncTimeline()
+	first := writeCueProject(t, dir, "soundcheck", []byte("audio"), beats...)
+	second := writeCueProject(t, dir, "encore", []byte("audio"), 0, 16)
+	a.openPaths([]string{first, second})
+
+	if len(a.projects) != 2 {
+		t.Fatalf("the set holds %d projects", len(a.projects))
+	}
 	a.refresh()
 	a.section = 1
 	a.highlightRows()
@@ -184,7 +185,7 @@ func TestDigitHotkeysFireCues(t *testing.T) {
 	if a.section != 2 {
 		t.Fatalf("typing 3 selected cue %d, expected the third", a.section)
 	}
-	if !a.rows[2].playing {
+	if !a.rows[2].live {
 		t.Fatal("the fired cue row is not highlighted")
 	}
 
@@ -264,7 +265,7 @@ func TestArrowKeysPickWithoutPlaying(t *testing.T) {
 	if a.section != 0 {
 		t.Fatalf("picking must not start playing, but the playing part moved to %d", a.section)
 	}
-	if !a.rows[1].selected {
+	if !a.rows[1].picked {
 		t.Fatal("the picked cue row is not highlighted")
 	}
 	if a.rows[1].bg.FillColor != colorRowPicked {
@@ -284,7 +285,7 @@ func TestArrowKeysPickWithoutPlaying(t *testing.T) {
 	if a.selected != 2 {
 		t.Fatalf("up landed on %d, expected 2", a.selected)
 	}
-	if a.rows[1].selected {
+	if a.rows[1].picked {
 		t.Fatal("the previously picked row is still highlighted")
 	}
 }
@@ -346,7 +347,7 @@ func TestClickingARowPicksIt(t *testing.T) {
 	if a.selected != 4 {
 		t.Fatalf("clicking the fifth row picked %d", a.selected)
 	}
-	if !a.rows[4].selected || a.rows[0].selected {
+	if !a.rows[4].picked || a.rows[0].picked {
 		t.Fatal("the wrong row is highlighted")
 	}
 }
@@ -382,13 +383,13 @@ func TestPlayingPartAndPickedPartAreShownSeparately(t *testing.T) {
 	a.section = 1
 	a.selectCue(4)
 
-	if !a.rows[1].playing || a.rows[1].bar.FillColor != colorBarPlaying {
+	if !a.rows[1].live || a.rows[1].bar.FillColor != colorBarPlaying {
 		t.Fatal("the part playing now should be edged in blue")
 	}
-	if a.rows[1].selected {
+	if a.rows[1].picked {
 		t.Fatal("the part playing now should not be the picked one")
 	}
-	if !a.rows[4].selected || a.rows[4].bg.FillColor != colorRowPicked {
+	if !a.rows[4].picked || a.rows[4].bg.FillColor != colorRowPicked {
 		t.Fatal("the picked part is not highlighted")
 	}
 	if a.rows[4].bar.FillColor == colorBarPlaying {
@@ -427,4 +428,8 @@ func TestBeatFormatting(t *testing.T) {
 	if got := formatBeat(3.500); got != "3.5" {
 		t.Fatalf("beat formatted as %q", got)
 	}
+}
+
+func testOptions() Options {
+	return Options{MemoryBudget: 256 << 20}
 }
